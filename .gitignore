@@ -1,0 +1,24 @@
+# Ignore everything
+*
+# But not these files
+!.gitignore
+!LICENSE
+!README.md
+!htdocs
+!htdocs/glpi.py
+!htdocs/images
+!htdocs/images/icons
+!htdocs/images/icons/glpi.png
+!plugins
+!plugins/config
+!plugins/config/glpi.py
+!plugins/cron
+!plugins/cron/glpi.py
+!plugins/glpi
+!plugins/glpi/*
+!plugins/pages
+!plugins/pages/glpi.py
+!plugins/sidebar
+!plugins/sidebar/glpi.py
+!plugins/views
+!plugins/views/glpi.py

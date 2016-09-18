@@ -22,6 +22,7 @@ glpi_default_config = {
     'db_passwd'              : 'glpipasswd',
     'states'                 : ['prod', 'uat', 'dev'],
     'states_to_add'          : ['prod'],
+    'ignored_hosts'          : [],
     'dns_suffixes'           : ['dmz.local'],
     'type_matches'           : [
                                 (u'Blade Server', u'blade'),

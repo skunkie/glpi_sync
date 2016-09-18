@@ -152,6 +152,14 @@ def page_config():
               ],
               help = _('Add new hosts with these states.')
         )),
+        ( 'ignored_hosts',
+          ListOfStrings(
+              valuespec = RegExpUnicode(),
+              title = _('Do not add these hosts'),
+              orientation = 'horizontal',
+              elements = [],
+              help = _('Do not add these hosts. Regular expressions are possible.')
+        )),
         ( 'dns_suffixes',
           ListOfStrings(
               title = _('DNS suffixes to add'),
@@ -195,7 +203,7 @@ def page_config():
         )),
         ( 'discover_services',
           Checkbox(
-              title = _('Discover services on new hosts'),
+              title = _('Discover services for new hosts'),
               label = _('Enable'),
         )),
         ( 'cron',
@@ -245,6 +253,7 @@ def page_config():
 def sync_glpi(glpi_config):
 
     import MySQLdb
+    import re
     from socket import gethostbyname_ex
     from wato import create_snapshot, ping
     from watolib import Folder, Host, check_mk_automation, log_commit_pending, load_hosttags, synchronize_site
@@ -306,6 +315,7 @@ def sync_glpi(glpi_config):
     folder_path = ''
     new_hosts = []
     snapshot_name = None
+    ignored_hosts = [re.compile(x) for x in glpi_config['ignored_hosts']]
 
     for host_id, hostname, tag_criticality, type_name, os_name in db_result:
         # New hosts will be added to default sites
@@ -357,6 +367,9 @@ def sync_glpi(glpi_config):
             else:
                 # add only if hosts have an IP address
                 if tag_criticality in glpi_config['states_to_add'] and ipaddr:
+                    # do not add the host if it is in ignored hosts
+                    if [p for p in ignored_hosts if p.match(hostname)]:
+                        continue
                     # add only if ICMP reply is received
                     if not ping(ipaddr[0]):
                         errors += ['cannot add hostname %s: no ICMP reply is received' % hostname]

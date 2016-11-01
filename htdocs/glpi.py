@@ -182,7 +182,7 @@ def page_config():
                 ],
             ),
             title = _('Host Tags: Type'),
-            help = _('Exact match for Type from GLPI table "glpi_computertypes" to Internal ID "type".')
+            help = _('Substring match for Type from GLPI table "glpi_computertypes" to Internal ID "type".')
         )),
         ( 'os_matches',
           ListOf(
@@ -349,14 +349,14 @@ def sync_glpi(glpi_config):
         }
 
         if type_name:
-            # exact match
-            tag_type = ''.join([y for x,y in glpi_config.get('type_matches', []) if x == type_name])
+            # substring match
+            tag_type = next((y for x, y in glpi_config.get('type_matches', []) if x in type_name), None)
             if tag_type:
                 attributes['tag_type'] = tag_type
 
         if os_name:
             # substring match
-            tag_os = ''.join([y for x,y in glpi_config.get('os_matches', []) if x in os_name])
+            tag_os = next((y for x, y in glpi_config.get('os_matches', []) if x in os_name), None)
             if tag_os:
                 attributes['tag_os'] = tag_os
 

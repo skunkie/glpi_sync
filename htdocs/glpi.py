@@ -15,19 +15,24 @@
 # to the Free Software Foundation, Inc., 51 Franklin St,  Fifth Floor,
 # Boston, MA 02110-1301 USA.
 
-import config, defaults, os, visuals, time
+import config
+import cmk.paths
+import os
+import table
+import visuals
+import time
 from pprint import pprint
 from lib import aquire_lock
 from reporting import last_scheduled_time, SchedulePeriod
 from valuespec import *
 from wato import make_action_link
 
-
 loaded_with_language = False
 config_page = 'glpi_config.py'
-schedule_file_path = defaults.var_dir + '/glpi_schedule.py'
-config_file_path = defaults.var_dir + '/glpi_config.py'
-errlog_file_path = defaults.var_dir + '/glpi_errors.log'
+schedule_file_path = cmk.paths.var_dir + '/glpi_schedule.py'
+config_file_path = cmk.paths.var_dir + '/glpi_config.py'
+errlog_file_path = cmk.paths.var_dir + '/glpi_errors.log'
+snapshot_name = None
 
 
 def load_plugins(force):
@@ -44,14 +49,28 @@ def load_plugins(force):
     # are loaded).
     loaded_with_language = current_language
 
-    config.declare_permission('general.glpi_config', _('Change GLPI settings'),
-              _('Allows a user to change GLPI settings.'),
-              [ 'admin' ])
+    config.declare_permission(
+        'general.glpi_config',
+        _('Change GLPI settings'),
+        _('Allows a user to change GLPI settings.'),
+        [ 'admin' ])
+
+
+def load_glpi_file(file_path, default_content={}):
+    if not os.path.exists(file_path):
+        save_glpi_file(file_path, default_content)
+
+    aquire_lock(file_path)
+    return eval(file(file_path).read())
+
+
+def save_glpi_file(file_path, content):
+    file(file_path, 'w').write('%s\n' % pprint.pformat(content))
 
 
 def load_glpi_config():
     if not os.path.exists(config_file_path):
-        load_web_plugins('glpi', globals())
+        config.load_plugins(False)
         save_glpi_config(config.glpi_default_config)
 
     aquire_lock(config_file_path)
@@ -59,52 +78,50 @@ def load_glpi_config():
 
 
 def load_glpi_schedule():
-    if not os.path.exists(schedule_file_path):
-        save_glpi_schedule({})
-
-    aquire_lock(schedule_file_path)
-    return eval(file(schedule_file_path).read())
+    return load_glpi_file(schedule_file_path)
 
 
 def load_glpi_errlog():
-    if not os.path.exists(errlog_file_path):
-        save_glpi_errlog('')
-
-    aquire_lock(errlog_file_path)
-    return file(errlog_file_path).readlines()
+    return load_glpi_file(errlog_file_path)
 
 
 def save_glpi_config(config):
-    file(config_file_path, 'w').write('%s\n' % pprint.pformat(config))
+    save_glpi_file(config_file_path, config)
 
 
 def save_glpi_schedule(schedule):
-    file(schedule_file_path, 'w').write('%s\n' % pprint.pformat(schedule))
+    save_glpi_file(schedule_file_path, schedule)
 
 
 def save_glpi_errlog(error):
-    file(errlog_file_path, 'w').write(error)
+    save_glpi_file(errlog_file_path, error)
 
 
 def page_config():
-    is_admin = config.may('general.glpi_config')
+    is_admin = config.user.may('general.glpi_config')
     if not is_admin:
-        config.need_permission('general.glpi_config')
+        config.user.need_permission('general.glpi_config')
 
+    global glpi_config
     glpi_config = load_glpi_config()
+    errlog = load_glpi_errlog()
 
+    html.disable_request_timeout()
     html.header(_('GLPI Sync'), stylesheets=['pages', 'views', 'status', 'glpi'])
     html.begin_context_buttons()
     html.context_button(_('Sync now'), make_action_link([('_sync', 'true')]), icon='glpi', hot=do_sync(True))
     html.end_context_buttons()
 
-    errlog = load_glpi_errlog()
     html.begin_foldable_container(
-        'synclog', 'synclog', False,  HTML('<b>SYNC ERRORS (%d)</b>' % len(errlog)))
-    if errlog:
-        html.show_error('<br>'.join(errlog))
-    else:
-        html.show_info('No errors')
+        'host_sync_errors', 'host_sync_errors', False,  HTML('<b>HOST SYNC ERRORS (%d)</b>' % len(errlog)))
+
+    table.begin(table_id='host_sync_errors', empty_text='No errors')
+    for hostname in errlog:
+        table.row()
+        table.cell('Hostname', hostname)
+        table.cell('Error', errlog[hostname])
+    table.end()
+
     html.end_foldable_container()
 
     settings = []
@@ -150,11 +167,11 @@ def page_config():
                 ('uat',  _('UAT system'), ),
                 ('dev',  _('Development system'), ),
               ],
-              help = _('Add new hosts with these states.')
+              help = _('Add new hosts with these states only.')
         )),
         ( 'ignored_hosts',
           ListOfStrings(
-              valuespec = RegExpUnicode(),
+              valuespec = RegExpUnicode(mode = RegExpUnicode.prefix),
               title = _('Do not add these hosts'),
               orientation = 'horizontal',
               elements = [],
@@ -250,30 +267,49 @@ def page_config():
     html.footer()
 
 
-def sync_glpi(glpi_config):
+def check_tags():
 
-    import MySQLdb
-    import re
-    from socket import gethostbyname_ex
-    from wato import create_snapshot, ping
-    from watolib import Folder, Host, check_mk_automation, log_commit_pending, load_hosttags, synchronize_site
+    from watolib import load_hosttags
 
-    # check if necessary tags are present
+    tag_errors = []
     wato_host_tags, _ = load_hosttags()
-    for check_internal_id, config_entry in [('type', 'type_matches'), ('os', 'os_matches')]:
+    for tag_internal_id, config_entry in [('type', 'type_matches'), ('os', 'os_matches')]:
         tag_present = False
 
         for internal_id, _, values in wato_host_tags:
-            if internal_id == check_internal_id:
+            if internal_id == tag_internal_id:
                 tag_present = True
 
                 for _, tag_id in glpi_config[config_entry]:
                     check_value = [x for x,_,_ in values if x == tag_id]
                     if not check_value:
-                        return 'Add Tag ID "%s" to Internal ID "%s" in Host Tags' % (tag_id, internal_id)
+                        tag_errors.append('Add Tag ID "%s" to Internal ID "%s" in Host Tags' % (tag_id, internal_id))
 
         if not tag_present:
-            return 'Add Internal ID "%s" to Host Tags' % internal_id
+            tag_errors.append('Add Internal ID "%s" to Host Tags' % internal_id)
+
+    return tag_errors
+
+
+def check_snapshot():
+
+    from watolib import lock_exclusive, unlock_exclusive
+    from wato import create_snapshot
+
+    global snapshot_name
+    if not snapshot_name:
+        lock_exclusive()
+        snapshot_name = create_snapshot('GLPI Sync')
+        unlock_exclusive()
+
+
+def sync_glpi():
+
+    import MySQLdb
+    import re
+    from socket import gaierror, gethostbyname_ex
+    from wato import ping, prepare_git_commit
+    from watolib import ActivateChangesManager, Folder, Host, check_mk_automation, default_site
 
     query = """
         SELECT c.id host_id,
@@ -290,7 +326,7 @@ def sync_glpi(glpi_config):
         ON c.operatingsystems_id = os.id
         WHERE c.is_deleted = 0
         AND c.is_template = 0
-        AND LOWER(s.name) in (%s)
+        AND LOWER(s.name) IN (%s)
         ORDER BY hostname
     """ % ', '.join(map(lambda x: '%s', glpi_config['states']))
 
@@ -308,40 +344,44 @@ def sync_glpi(glpi_config):
     except MySQLdb.Error, e:
         return str(e)
 
-    activate_changes = False
     all_hosts = Host.all()
     all_hosts_no_dns_suffixes = dict((x.split('.', 1)[0],x) for x in all_hosts)
-    errors = []
-    folder_path = ''
+    errors = {}
     new_hosts = []
-    snapshot_name = None
-    ignored_hosts = [re.compile(x) for x in glpi_config['ignored_hosts']]
+    ignored_hosts = [re.compile(x) for x in glpi_config.get('ignored_hosts', [])]
+
+    if config.wato_use_git:
+        prepare_git_commit()
 
     for host_id, hostname, tag_criticality, type_name, os_name in db_result:
-        # New hosts will be added to default sites
-        cluster_nodes = None
-        ipaddr = None
+        cluster_nodes = None  # New hosts will be added to default sites
+        fqdn = ''
+        ipaddr = []
 
         # check if hostname is valid
-        if not hostname:
-            continue
         try:
             Hostname().validate_value(hostname, 'hostname')
         except Exception, e:
-            errors += ['%s - %s' % (hostname, e)]
+            errors[hostname] = e
             continue
 
         # check if the hostname can be resolved to an IP address
         try:
             fqdn, _, ipaddr = gethostbyname_ex(hostname)
-        except:
-            errors += ['hostname %s cannot be resolved to an IP address' % hostname]
+        except gaierror:
+            errors[hostname] = 'cannot be resolved to an IP address'
+
         # check dns suffix
         fqdn_split = fqdn.split('.', 1)
         if len(fqdn_split) == 2:
             dns_suffix = fqdn.split('.', 1)[1]
             if dns_suffix in glpi_config['dns_suffixes']:
                 hostname = fqdn
+
+        # add a DNS suffix if there is an A record in two zones,
+        # e.g. host1.zone1.local and host1.zone2.local, but
+        # in OMD it is registered as host1.zone2.local
+        hostname = all_hosts_no_dns_suffixes.get(hostname, hostname)
 
         # prepare attributes
         attributes = {
@@ -361,23 +401,19 @@ def sync_glpi(glpi_config):
                 attributes['tag_os'] = tag_os
 
         if hostname not in all_hosts:
-            # avoid adding duplicates
-            if hostname in all_hosts_no_dns_suffixes:
-                hostname = all_hosts_no_dns_suffixes[hostname]
-            else:
-                # add only if hosts have an IP address
+            # avoid adding a duplicate host
+            if hostname not in all_hosts_no_dns_suffixes:
+                # add only if a host has an IP address
                 if tag_criticality in glpi_config['states_to_add'] and ipaddr:
-                    # do not add the host if it is in ignored hosts
+                    # do not add a host if it is in ignored hosts
                     if [p for p in ignored_hosts if p.match(hostname)]:
                         continue
                     # add only if ICMP reply is received
                     if not ping(ipaddr[0]):
-                        errors += ['cannot add hostname %s: no ICMP reply is received' % hostname]
+                        errors[hostname] = 'cannot add, no ICMP reply is received'
                         continue
                     new_hosts += [(hostname, attributes, cluster_nodes)]
-                    activate_changes = True
-                    if not snapshot_name:
-                        snapshot_name = create_snapshot()
+                    check_snapshot()
                 continue
 
         host = Host.host(hostname)
@@ -385,18 +421,16 @@ def sync_glpi(glpi_config):
         new_attributes = host.attributes().copy()
         new_attributes.update(attributes)
         if new_attributes != host.attributes():
-            if not snapshot_name:
-                snapshot_name = create_snapshot()
+            check_snapshot()
             host.edit(new_attributes, host.cluster_nodes())
-            activate_changes = True
 
     # Close DB connection
     cur.close()
 
     if new_hosts:
-        Folder.folder(folder_path).create_hosts(new_hosts)
+        Folder.root_folder().create_hosts(new_hosts)
 
-        if glpi_config['discover_services']:
+        if glpi_config.get('discover_services', False):
             for hostname, _, _ in new_hosts:
                 host = Host.host(hostname)
                 host_attributes = host.effective_attributes()
@@ -404,51 +438,58 @@ def sync_glpi(glpi_config):
                     host_attributes.get('site'), 'inventory', [ '@scan', 'new' ] + [hostname])
 
     # Activate changes, only for the default site
-    if activate_changes:
-        try:
-            synchronize_site(config.site(config.default_site()), True)
-        except Exception, e:
-            return str(e)
-
-        log_commit_pending()
+    manager = ActivateChangesManager()
+    manager.load()
+    if manager.has_changes():
+        sites = [default_site()]
+        manager.start(sites, comment='GLPI Sync', activate_foreign=False)
+        manager.wait_for_completion()
 
     save_glpi_schedule({'last_run': time.time()})
-
-    if errors:
-        return '\n'.join(errors)
-
-    return None
+    save_glpi_errlog(errors)
 
 # This is registered as a Multisite cron job
 def do_sync(WATO=False):
-
-    glpi_config = load_glpi_config()
 
     if WATO and html.has_var('_sync'):
         # make sure it is not a browser reload
         if not html.check_transaction():
             return False
 
-        error = sync_glpi(glpi_config)
-        save_glpi_errlog(error)
+        tag_errors = check_tags()
+        if tag_errors:
+            html.show_error('\n'.join(tag_errors))
+            return False
+
+        sync_error = sync_glpi()
+        if sync_error:
+            html.show_error(sync_error)
+            return False
+
+        html.enable_request_timeout()
         html.immediate_browser_redirect(1, config_page)
 
     elif not WATO and glpi_config['cron']:
 
         schedule = load_glpi_schedule()
         last_run = schedule.get('last_run', 0)
-        last_time = last_scheduled_time(glpi_config)
+        last_time = last_scheduled_time(glpi_config['period'], glpi_config['timeofday'])
 
         # Do not sync if last_time is less than last_run
         # when not run in WATO
         if last_time < last_run:
             return False
 
+        tag_errors = check_tags()
+        if tag_errors:
+            return False
+
         from wato import load_plugins
 
-        config.login(glpi_config['cron_user'])
+        config.set_user_by_id(glpi_config['cron_user'])
         load_plugins(True)
-        error = sync_glpi(glpi_config)
-        save_glpi_errlog(error)
+        sync_glpi()
 
     return True
+
+glpi_config = load_glpi_config()

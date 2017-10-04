@@ -21,5 +21,3 @@
 !plugins/pages/glpi.py
 !plugins/sidebar
 !plugins/sidebar/glpi.py
-!plugins/views
-!plugins/views/glpi.py

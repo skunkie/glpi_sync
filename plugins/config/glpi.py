@@ -41,7 +41,7 @@ glpi_default_config = {
                                ],
     'discover_services'      : False,
     'cron'                   : False,
-    'cron_user'              : u'omdadmin',
+    'cron_user'              : u'cmkadmin',
     'period'                 : 'day',
     'timeofday'              : (0,0),
 }

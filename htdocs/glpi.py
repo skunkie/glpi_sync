@@ -21,9 +21,9 @@ import os
 import table
 import visuals
 import time
-from pprint import pprint
+from cmk.schedule import last_scheduled_time
 from lib import aquire_lock
-from reporting import last_scheduled_time, SchedulePeriod
+from pprint import pprint
 from valuespec import *
 from wato import make_action_link
 

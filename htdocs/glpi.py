@@ -283,10 +283,10 @@ def check_tags():
                 for _, tag_id in glpi_config[config_entry]:
                     check_value = [x for x,_,_ in values if x == tag_id]
                     if not check_value:
-                        tag_errors.append('Add Tag ID "%s" to Internal ID "%s" in Host Tags' % (tag_id, internal_id))
+                        tag_errors.append('Add Tag ID <i>%s</i> to Host Tag group <i>%s</i><br>' % (tag_id, internal_id))
 
         if not tag_present:
-            tag_errors.append('Add Internal ID "%s" to Host Tags' % internal_id)
+            tag_errors.append('Add Host Tag group <i>%s</i><br>' % tag_internal_id)
 
     return tag_errors
 
